@@ -2,9 +2,13 @@ name: Rust
 
 on:
   push:
-    branches: [ "main" ]
+    branches: ["main"]
+    paths-ignore:
+      - "README.md"
   pull_request:
-    branches: [ "main" ]
+    branches: ["main"]
+    paths-ignore:
+      - "README.md"
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
@@ -15,178 +19,323 @@ env:
 
 jobs:
   build:
-
     runs-on: ubuntu-latest
 
     steps:
-    - uses: actions/checkout@v3
-    - uses: actions-rs/toolchain@v1
-      with:
-          toolchain: nightly
+      - uses: actions/checkout@v3
+      - uses: jetli/wasm-pack-action@v0.4.0
+      - uses: actions-rs/toolchain@v1
+        with:
+          toolchain: nightly-2022-11-03
           override: true
-          components: rustfmt, clippy    
-    - name: Build
-      run: cargo build --verbose
-  
-  benchmarks: 
+          components: rustfmt, clippy
+      - name: Build
+        run: cargo build --verbose
 
-    runs-on: ubuntu-latest-16-cores
+  build-wasm:
+    runs-on: ubuntu-latest
 
     steps:
-    - uses: actions/checkout@v3
-    - uses: actions-rs/toolchain@v1
-      with:
-          toolchain: nightly
+      - uses: actions/checkout@v3
+      - uses: jetli/wasm-pack-action@v0.4.0
+      - uses: actions-rs/toolchain@v1
+        with:
+          toolchain: nightly-2022-11-03
           override: true
-          components: rustfmt, clippy    
-    - name: Bench
-      run: cargo bench --verbose
+          components: rustfmt, clippy
+      - uses: jetli/wasm-pack-action@v0.4.0
+      - uses: mwilliamson/setup-wasmtime-action@v2
+        with:
+          wasmtime-version: "3.0.1"
+      - name: Install wasm32-wasi
+        run: rustup target add wasm32-wasi
+      - name: Build wasm
+        run: wasm-pack build -- --bin ezkl --target wasm32-wasi
+      - name: Run help
+        run: wasmtime run './target/wasm32-wasi/release/ezkl.wasm' -- --help
+
+  benchmarks:
+    runs-on: self-hosted
+
+    steps:
+      - uses: actions/checkout@v3
+      - uses: jetli/wasm-pack-action@v0.4.0
+      - uses: actions-rs/toolchain@v1
+        with:
+          toolchain: nightly-2022-11-03
+          override: true
+          components: rustfmt, clippy
+      - name: Bench accum matmul
+        run: cargo bench --verbose --bench accum_matmul
+      - name: Bench accum matmul relu
+        run: cargo bench --verbose --bench accum_matmul_relu
+      - name: Bench relu
+        run: cargo bench --verbose --bench relu
+      - name: Bench accum dot
+        run: cargo bench --verbose --bench accum_dot
+      - name: Bench accum affine
+        run: cargo bench --verbose --bench accum_affine
+      - name: Bench accum conv
+        run: cargo bench --verbose --bench accum_conv
+      - name: Bench accum sumpool
+        run: cargo bench --verbose --bench accum_sumpool
+      - name: Bench pairwise add
+        run: cargo bench --verbose --bench pairwise_add
+      - name: Bench accum sum
+        run: cargo bench --verbose --bench accum_sum
+      - name: Bench pairwise pow
+        run: cargo bench --verbose --bench pairwise_pow
+      - name: Bench accum pack
+        run: cargo bench --verbose --bench accum_pack
 
   docs:
-
     runs-on: ubuntu-latest
 
     steps:
-    - uses: actions/checkout@v3
-    - uses: actions-rs/toolchain@v1
-      with:
-          toolchain: nightly
+      - uses: actions/checkout@v3
+      - uses: jetli/wasm-pack-action@v0.4.0
+      - uses: actions-rs/toolchain@v1
+        with:
+          toolchain: nightly-2022-11-03
           override: true
-          components: rustfmt, clippy    
-    - name: Docs
-      run: cargo doc --verbose
+          components: rustfmt, clippy
+      - name: Docs
+        run: cargo doc --verbose
 
   library-tests:
-
-    runs-on: ubuntu-latest
-
-    steps:
-    - uses: actions/checkout@v3
-    - uses: actions-rs/toolchain@v1
-      with:
-          toolchain: nightly
-          override: true
-          components: rustfmt, clippy 
-    - name: Doc tests
-      run: cargo test --doc --verbose
-    - name: Library tests
-      run: cargo test --lib --verbose
-  
-  mock-proving-tests:
-
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v3
-      with:
-          submodules: recursive
-    - uses: actions-rs/toolchain@v1
-      with:
-          toolchain: nightly
-          override: true
-          components: rustfmt, clippy 
-
-    - name: Mock proving tests (public outputs)
-      run: cargo test --release --verbose tests::mock_public_outputs_ -- --test-threads 16
-    - name: Mock proving tests (public inputs)
-      run: cargo test --release --verbose tests::mock_public_inputs_ -- --test-threads 16
-    - name: Mock proving tests (public params)
-      run: cargo test --release --verbose tests::mock_public_params_ -- --test-threads 16
-  
-  prove-and-verify-evm-tests:
-
-    runs-on: ubuntu-latest-16-cores
-    steps:
-    - uses: actions/checkout@v3
-      with:
-          submodules: recursive
-    - uses: actions-rs/toolchain@v1
-      with:
-          toolchain: nightly
+      - uses: actions/checkout@v3
+      - uses: jetli/wasm-pack-action@v0.4.0
+      - uses: actions-rs/toolchain@v1
+        with:
+          toolchain: nightly-2022-11-03
           override: true
           components: rustfmt, clippy
+      - name: Doc tests
+        run: cargo test --doc --verbose
+      - name: Library tests
+        run: cargo test --lib --verbose
 
-    - name: Install solc
-      run: (hash svm 2>/dev/null || cargo install svm-rs) && svm install 0.8.17 && solc --version
-    - name: KZG prove and verify tests (EVM)
-      run: cargo test --release --verbose tests::kzg_evm_prove_and_verify_ -- --test-threads 4
+  forward-pass-tests:
+    runs-on: ubuntu-latest-16-cores
+    steps:
+      - uses: actions/checkout@v3
+      - uses: jetli/wasm-pack-action@v0.4.0
+      - uses: actions-rs/toolchain@v1
+        with:
+          toolchain: nightly-2022-11-03
+          override: true
+          components: rustfmt, clippy
+      - name: Install wasm32-wasi
+        run: rustup target add wasm32-wasi
+      - name: Forward Pass
+        run: cargo test --release --verbose tests::forward_pass_
+
+  render-circuit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - uses: jetli/wasm-pack-action@v0.4.0
+      - uses: actions-rs/toolchain@v1
+        with:
+          toolchain: nightly-2022-11-03
+          override: true
+          components: rustfmt, clippy
+      - name: Install wasm32-wasi
+        run: rustup target add wasm32-wasi
+      - name: Circuit Render
+        run: cargo test --release --verbose tests::render_circuit_
+
+  tutorial:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - uses: jetli/wasm-pack-action@v0.4.0
+      - uses: actions-rs/toolchain@v1
+        with:
+          toolchain: nightly-2022-11-03
+          override: true
+          components: rustfmt, clippy
+      - name: Install wasm32-wasi
+        run: rustup target add wasm32-wasi
+      - name: Circuit Render
+        run: cargo test --release --verbose tests::tutorial_
+
+  mock-proving-tests:
+    runs-on: ubuntu-latest-32-cores
+    steps:
+      - uses: actions/checkout@v3
+      - uses: jetli/wasm-pack-action@v0.4.0
+      - uses: actions-rs/toolchain@v1
+        with:
+          toolchain: nightly-2022-11-03
+          override: true
+          components: rustfmt, clippy
+      - name: Install wasm32-wasi
+        run: rustup target add wasm32-wasi
+
+      - name: Mock proving tests (public outputs)
+        run: cargo test --release --verbose tests::mock_public_outputs_ -- --test-threads 32
+      - name: Mock proving tests (public and packed outputs)
+        run: cargo test --release --verbose packed_tests::mock_packed_outputs_ -- --test-threads 32
+      - name: Mock proving tests (public inputs)
+        run: cargo test --release --verbose tests::mock_public_inputs_ -- --test-threads 32
+      - name: Mock proving tests (public params)
+        run: cargo test --release --verbose tests::mock_public_params_ -- --test-threads 32
+      - name: Mock 'everything' tests (public and packed outputs, public inputs)
+        run: cargo test --release --verbose packed_tests::mock_everything_ -- --test-threads 32
+
+  mock-proving-tests-wasi:
+    runs-on: ubuntu-latest-32-cores
+    steps:
+      - uses: actions/checkout@v3
+      - uses: jetli/wasm-pack-action@v0.4.0
+      - uses: actions-rs/toolchain@v1
+        with:
+          toolchain: nightly-2022-11-03
+          override: true
+          components: rustfmt, clippy
+      - uses: jetli/wasm-pack-action@v0.4.0
+      - uses: mwilliamson/setup-wasmtime-action@v2
+        with:
+          wasmtime-version: "3.0.1"
+      - name: Install wasm32-wasi
+        run: rustup target add wasm32-wasi
+      - name: Mock proving tests (WASI) (public outputs)
+        run: cargo test --release --verbose tests_wasi::mock_public_outputs_ -- --test-threads 32
+      - name: Mock proving tests (WASI) (public and packed outputs)
+        run: cargo test --release --verbose packed_tests_wasi::mock_packed_outputs_ -- --test-threads 32
+      - name: Mock proving tests (WASI) (public inputs)
+        run: cargo test --release --verbose tests_wasi::mock_public_inputs_ -- --test-threads 32
+      - name: Mock proving tests (WASI) (public params)
+        run: cargo test --release --verbose tests_wasi::mock_public_params_ -- --test-threads 32
+      - name: Mock 'everything' tests (WASI) (public and packed outputs, public inputs)
+        run: cargo test --release --verbose packed_tests_wasi::mock_everything_ -- --test-threads 32
+
+  prove-and-verify-evm-tests:
+    runs-on: ubuntu-latest-16-cores
+    steps:
+      - uses: actions/checkout@v3
+      - uses: jetli/wasm-pack-action@v0.4.0
+      - uses: actions-rs/toolchain@v1
+        with:
+          toolchain: nightly-2022-11-03
+          override: true
+          components: rustfmt, clippy
+      - name: Install wasm32-wasi
+        run: rustup target add wasm32-wasi
+      - name: Install solc
+        run: (hash svm 2>/dev/null || cargo install svm-rs) && svm install 0.8.17 && solc --version
+      - name: Install Anvil
+        run: cargo install --git https://github.com/foundry-rs/foundry --profile local --locked foundry-cli anvil
+      - name: KZG prove and verify tests (EVM)
+        run: cargo test --release --verbose tests_evm -- --test-threads 4
 
   prove-and-verify-tests:
-
-    runs-on: ubuntu-latest-16-cores
+    runs-on: ubuntu-latest-32-cores
     steps:
-    - uses: actions/checkout@v3
-      with:
-          submodules: recursive
-    - uses: actions-rs/toolchain@v1
-      with:
-          toolchain: nightly
+      - uses: actions/checkout@v3
+      - uses: jetli/wasm-pack-action@v0.4.0
+      - uses: actions-rs/toolchain@v1
+        with:
+          toolchain: nightly-2022-11-03
           override: true
           components: rustfmt, clippy
-
-    - name: KZG prove and verify tests
-      run: cargo test --release --verbose tests::kzg_prove_and_verify_ -- --test-threads 4
+      - name: Install wasm32-wasi
+        run: rustup target add wasm32-wasi
+      - name: KZG prove and verify tests
+        run: cargo test --release --verbose tests::kzg_prove_and_verify_ -- --test-threads 8
 
   prove-and-verify-aggr-tests:
-
-    runs-on: ubuntu-latest-16-cores
-    steps:
-    - uses: actions/checkout@v3
-      with:
-          submodules: recursive
-    - uses: actions-rs/toolchain@v1
-      with:
-          toolchain: nightly
-          override: true
-          components: rustfmt, clippy
-
-    - name: KZG prove and verify aggr tests
-      run: cargo test --release --verbose tests_aggr::kzg_aggr_prove_and_verify_ -- --test-threads 1
-
-  prove-and-verify-evm-aggr-tests:
-
-    runs-on: ubuntu-latest-16-cores
-    steps:
-    - uses: actions/checkout@v3
-      with:
-          submodules: recursive
-    - uses: actions-rs/toolchain@v1
-      with:
-          toolchain: nightly
-          override: true
-          components: rustfmt, clippy
-    - name: Install solc
-      run: (hash svm 2>/dev/null || cargo install svm-rs) && svm install 0.8.17 && solc --version
-    - name: KZG prove and verify aggr tests
-      run: cargo test --release --verbose tests_evm::kzg_evm_aggr_prove_and_verify_ -- --test-threads 1 --include-ignored
-
-  examples:
-
     runs-on: self-hosted
     steps:
-    - uses: actions/checkout@v3
-    - uses: actions-rs/toolchain@v1
-      with:
-          toolchain: nightly
+      - uses: actions/checkout@v3
+      - uses: jetli/wasm-pack-action@v0.4.0
+      - uses: actions-rs/toolchain@v1
+        with:
+          toolchain: nightly-2022-11-03
           override: true
           components: rustfmt, clippy
+      - name: Install wasm32-wasi
+        run: rustup target add wasm32-wasi
+      - name: KZG prove and verify aggr tests
+        run: cargo test --release --verbose tests_aggr::kzg_aggr_prove_and_verify_ -- --test-threads 8
 
-    - name: Download MNIST
-      run: sh data.sh
-    - name: Examples
-      run: cargo test --release tests_examples  
+  prove-and-verify-aggr-evm-tests:
+    runs-on: self-hosted
+    steps:
+      - uses: actions/checkout@v3
+      - uses: jetli/wasm-pack-action@v0.4.0
+      - uses: actions-rs/toolchain@v1
+        with:
+          toolchain: nightly-2022-11-03
+          override: true
+          components: rustfmt, clippy
+      - name: Install wasm32-wasi
+        run: rustup target add wasm32-wasi
+      - name: Install solc
+        run: (hash svm 2>/dev/null || cargo install svm-rs) && svm install 0.8.17 && solc --version
+      - name: KZG prove and verify aggr tests
+        run: cargo test --release --verbose tests_evm::kzg_evm_aggr_prove_and_verify_ -- --include-ignored --test-threads 8
+
+  examples:
+    runs-on: ubuntu-latest-32-cores
+    steps:
+      - uses: actions/checkout@v3
+      - uses: jetli/wasm-pack-action@v0.4.0
+      - uses: actions-rs/toolchain@v1
+        with:
+          toolchain: nightly-2022-11-03
+          override: true
+          components: rustfmt, clippy
+      - name: Install wasm32-wasi
+        run: rustup target add wasm32-wasi
+      - name: Download MNIST
+        run: sh data.sh
+      - name: Examples
+        run: cargo test --release tests_examples
 
   neg-tests:
-
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v3
-      with:
-          submodules: recursive
-    - uses: actions-rs/toolchain@v1
-      with:
-          toolchain: nightly
+      - uses: actions/checkout@v3
+      - uses: jetli/wasm-pack-action@v0.4.0
+      - uses: actions-rs/toolchain@v1
+        with:
+          toolchain: nightly-2022-11-03
           override: true
           components: rustfmt, clippy
+      - uses: mwilliamson/setup-wasmtime-action@v2
+        with:
+          wasmtime-version: "3.0.1"
+      - name: Install wasm32-wasi
+        run: rustup target add wasm32-wasi
+      - name: Mock proving tests (should fail)
+        run: cargo test neg_tests::neg_examples_
+      - name: Mock proving tests (WASI) (should fail)
+        run: cargo test neg_tests_wasi::neg_examples_
 
-    - name: Mock proving tests (should fail)
-      run: cargo test neg_tests::neg_examples_      
+  python-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - uses: jetli/wasm-pack-action@v0.4.0
+      - uses: actions/setup-python@v4
+        with:
+          python-version: "3.7"
+      - uses: actions-rs/toolchain@v1
+        with:
+          toolchain: nightly-2022-11-03
+          override: true
+          components: rustfmt, clippy
+      - name: Install wasm32-wasi
+        run: rustup target add wasm32-wasi
+      - name: Install solc
+        run: (hash svm 2>/dev/null || cargo install svm-rs) && svm install 0.8.17 && solc --version
+      - name: Setup Virtual Env and Install python dependencies
+        run: python -m venv .env; source .env/bin/activate; pip install -r requirements.txt;
+      - name: Build python ezkl_lib
+        run: source .env/bin/activate; maturin develop --features python-bindings
+      - name: Run pytest
+        run: source .env/bin/activate; pytest

@@ -1,9 +1,6 @@
-use ezkl::circuit::lookup::{Config as LookupConfig, Op as LookupOp};
-use ezkl::circuit::polynomial::{
-    Config as PolyConfig, InputType as PolyInputType, Node as PolyNode, Op as PolyOp,
-};
-use ezkl::fieldutils::i32_to_felt;
-use ezkl::tensor::*;
+use ezkl_lib::circuit::{BaseConfig as PolyConfig, CheckMode, LookupOp, Op as PolyOp};
+use ezkl_lib::fieldutils::i32_to_felt;
+use ezkl_lib::tensor::*;
 use halo2_proofs::dev::MockProver;
 use halo2_proofs::{
     arithmetic::FieldExt,
@@ -17,11 +14,7 @@ const K: usize = 15;
 // A columnar ReLu MLP
 #[derive(Clone)]
 struct MyConfig<F: FieldExt + TensorType> {
-    l0: PolyConfig<F>,
-    l1: LookupConfig<F>,
-    l2: PolyConfig<F>,
-    l3: LookupConfig<F>,
-    l4: LookupConfig<F>,
+    layer_config: PolyConfig<F>,
     public_output: Column<Instance>,
 }
 
@@ -52,53 +45,37 @@ impl<F: FieldExt + TensorType, const LEN: usize, const BITS: usize> Circuit<F>
     // Here we wire together the layers by using the output advice in each layer as input advice in the next (not with copying / equality).
     // This can be automated but we will sometimes want skip connections, etc. so we need the flexibility.
     fn configure(cs: &mut ConstraintSystem<F>) -> Self::Config {
-        let input = VarTensor::new_advice(cs, K, LEN, vec![LEN], true, 512);
-        let kernel = VarTensor::new_advice(cs, K, LEN * LEN, vec![LEN, LEN], true, 512);
-        let bias = VarTensor::new_advice(cs, K, LEN, vec![LEN], true, 512);
-        let output = VarTensor::new_advice(cs, K, LEN, vec![LEN], true, 512);
+        let input = VarTensor::new_advice(cs, K, LEN);
+        let params = VarTensor::new_advice(cs, K, LEN * LEN);
+        let output = VarTensor::new_advice(cs, K, LEN);
         // tells the config layer to add an affine op to the circuit gate
-        let affine_node = PolyNode {
-            op: PolyOp::Affine,
-            input_order: vec![
-                PolyInputType::Input(0),
-                PolyInputType::Input(1),
-                PolyInputType::Input(2),
-            ],
-        };
 
-        let l0 = PolyConfig::<F>::configure(
-            cs,
-            &[input.clone(), kernel.clone(), bias.clone()],
-            &output,
-            &[affine_node.clone()],
-        );
-
-        let l2 =
-            PolyConfig::<F>::configure(cs, &[input.clone(), kernel, bias], &output, &[affine_node]);
+        let mut layer_config =
+            PolyConfig::<F>::configure(cs, &[input.clone(), params], &output, CheckMode::SAFE, 0);
 
         // sets up a new ReLU table and resuses it for l1 and l3 non linearities
-        let [l1, l3]: [LookupConfig<F>; 2] = LookupConfig::configure_multiple(
-            cs,
-            &input,
-            &output,
-            BITS,
-            &[LookupOp::ReLU { scale: 1 }],
-        )
-        .unwrap();
+        layer_config
+            .configure_lookup(cs, &input, &output, BITS, &LookupOp::ReLU { scale: 1 })
+            .unwrap();
 
-        // sets up a new Divide by table
-        let l4 =
-            LookupConfig::configure(cs, &input, &output, BITS, &[LookupOp::Div { scale: 128 }]);
+        // sets up a new ReLU table and resuses it for l1 and l3 non linearities
+        layer_config
+            .configure_lookup(
+                cs,
+                &input,
+                &output,
+                BITS,
+                &LookupOp::Div {
+                    denom: ezkl_lib::circuit::utils::F32::from(128.),
+                },
+            )
+            .unwrap();
 
         let public_output: Column<Instance> = cs.instance_column();
         cs.enable_equality(public_output);
 
         MyConfig {
-            l0,
-            l1,
-            l2,
-            l3,
-            l4,
+            layer_config,
             public_output,
         }
     }
@@ -108,30 +85,88 @@ impl<F: FieldExt + TensorType, const LEN: usize, const BITS: usize> Circuit<F>
         mut config: Self::Config,
         mut layouter: impl Layouter<F>,
     ) -> Result<(), Error> {
-        let x = config
-            .l0
-            .layout(
-                &mut layouter,
-                &[
-                    self.input.clone(),
-                    self.l0_params[0].clone(),
-                    self.l0_params[1].clone(),
-                ],
+        config.layer_config.layout_tables(&mut layouter).unwrap();
+
+        let x = layouter
+            .assign_region(
+                || "mlp_4d",
+                |mut region| {
+                    let mut offset = 0;
+                    let x = config
+                        .layer_config
+                        .layout(
+                            &mut region,
+                            &[
+                                self.input.clone(),
+                                self.l0_params[0].clone(),
+                                self.l0_params[1].clone(),
+                            ],
+                            &mut offset,
+                            PolyOp::Affine.into(),
+                        )
+                        .unwrap()
+                        .unwrap();
+
+                    println!("offset: {}", offset);
+                    println!("x shape: {:?}", x.dims());
+                    let mut x = config
+                        .layer_config
+                        .layout(
+                            &mut region,
+                            &[x],
+                            &mut offset,
+                            LookupOp::ReLU { scale: 1 }.into(),
+                        )
+                        .unwrap()
+                        .unwrap();
+                    println!("offset: {}", offset);
+                    println!("x shape: {:?}", x.dims());
+                    x.reshape(&[x.dims()[0], 1]).unwrap();
+                    let x = config
+                        .layer_config
+                        .layout(
+                            &mut region,
+                            &[x, self.l2_params[0].clone(), self.l2_params[1].clone()],
+                            &mut offset,
+                            PolyOp::Affine.into(),
+                        )
+                        .unwrap()
+                        .unwrap();
+                    println!("offset: {}", offset);
+                    println!("x shape: {:?}", x.dims());
+                    let x = config
+                        .layer_config
+                        .layout(
+                            &mut region,
+                            &[x],
+                            &mut offset,
+                            LookupOp::ReLU { scale: 1 }.into(),
+                        )
+                        .unwrap();
+                    println!("offset: {}", offset);
+                    Ok(config
+                        .layer_config
+                        .layout(
+                            &mut region,
+                            &[x.unwrap()],
+                            &mut offset,
+                            LookupOp::Div {
+                                denom: ezkl_lib::circuit::utils::F32::from(128.),
+                            }
+                            .into(),
+                        )
+                        .unwrap())
+                },
             )
             .unwrap();
-        let x = config.l1.layout(&mut layouter, &x).unwrap();
-        let x = config
-            .l2
-            .layout(
-                &mut layouter,
-                &[x, self.l2_params[0].clone(), self.l2_params[1].clone()],
-            )
-            .unwrap();
-        let x = config.l3.layout(&mut layouter, &x).unwrap();
-        let x = config.l4.layout(&mut layouter, &x).unwrap();
-        match x {
-            ValTensor::PrevAssigned { inner: v, dims: _ } => v
-                .enum_map(|i, x| layouter.constrain_instance(x.cell(), config.public_output, i))
+        match x.unwrap() {
+            ValTensor::Value { inner: v, dims: _ } => v
+                .enum_map(|i, x| match x {
+                    ValType::PrevAssigned(v) => {
+                        layouter.constrain_instance(v.cell(), config.public_output, i)
+                    }
+                    _ => panic!(),
+                })
                 .unwrap(),
             _ => panic!("Should be assigned"),
         };
@@ -140,6 +175,7 @@ impl<F: FieldExt + TensorType, const LEN: usize, const BITS: usize> Circuit<F>
 }
 
 pub fn runmlp() {
+    env_logger::init();
     // parameters
     let l0_kernel: Tensor<Value<F>> = Tensor::<i32>::new(
         Some(&[10, 0, 0, -1, 0, 10, 1, 0, 0, 1, 10, 0, 1, 0, 0, 10]),
@@ -147,7 +183,7 @@ pub fn runmlp() {
     )
     .unwrap()
     .into();
-    let l0_bias: Tensor<Value<F>> = Tensor::<i32>::new(Some(&[0, 0, 0, 1]), &[4])
+    let l0_bias: Tensor<Value<F>> = Tensor::<i32>::new(Some(&[0, 0, 0, 1]), &[4, 1])
         .unwrap()
         .into();
 
@@ -158,10 +194,10 @@ pub fn runmlp() {
     .unwrap()
     .into();
     // input data, with 1 padding to allow for bias
-    let input: Tensor<Value<F>> = Tensor::<i32>::new(Some(&[-30, -21, 11, 40]), &[4])
+    let input: Tensor<Value<F>> = Tensor::<i32>::new(Some(&[-30, -21, 11, 40]), &[4, 1])
         .unwrap()
         .into();
-    let l2_bias: Tensor<Value<F>> = Tensor::<i32>::new(Some(&[0, 0, 0, 1]), &[4])
+    let l2_bias: Tensor<Value<F>> = Tensor::<i32>::new(Some(&[0, 0, 0, 1]), &[4, 1])
         .unwrap()
         .into();
 

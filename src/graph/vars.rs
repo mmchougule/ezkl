@@ -1,16 +1,16 @@
 use std::error::Error;
 
-use crate::commands::Cli;
+use crate::commands::RunArgs;
 use crate::tensor::TensorType;
 use crate::tensor::{ValTensor, VarTensor};
 use halo2_proofs::{arithmetic::FieldExt, plonk::ConstraintSystem};
 use itertools::Itertools;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use super::GraphError;
 
 /// Label Enum to track whether model input, model parameters, and model output are public or private
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Visibility {
     /// Mark an item as private to the prover (not in the proof submitted for verification)
     Private,
@@ -33,7 +33,7 @@ impl std::fmt::Display for Visibility {
 }
 
 /// Whether the model input, model parameters, and model output are Public or Private to the prover.
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct VarVisibility {
     /// Input to the model or computational graph
     pub input: Visibility,
@@ -55,7 +55,7 @@ impl std::fmt::Display for VarVisibility {
 impl VarVisibility {
     /// Read from cli args whether the model input, model parameters, and model output are Public or Private to the prover.
     /// Place in [VarVisibility] struct.
-    pub fn from_args(args: Cli) -> Result<Self, Box<dyn Error>> {
+    pub fn from_args(args: RunArgs) -> Result<Self, Box<dyn Error>> {
         let input_vis = if args.public_inputs {
             Visibility::Public
         } else {
@@ -98,37 +98,22 @@ impl<F: FieldExt + TensorType> ModelVars<F> {
     pub fn new(
         cs: &mut ConstraintSystem<F>,
         logrows: usize,
-        max_rotations: usize,
-        advice_dims: (usize, usize),
-        fixed_dims: (usize, usize),
-        instance_dims: (usize, Vec<Vec<usize>>),
+        var_len: usize,
+        instance_dims: Vec<Vec<usize>>,
+        visibility: VarVisibility,
     ) -> Self {
-        let advices = (0..advice_dims.0)
-            .map(|_| {
-                VarTensor::new_advice(
-                    cs,
-                    logrows,
-                    advice_dims.1,
-                    vec![advice_dims.1],
-                    true,
-                    max_rotations,
-                )
-            })
+        let advices = (0..3)
+            .map(|_| VarTensor::new_advice(cs, logrows, var_len))
             .collect_vec();
-        let fixed = (0..fixed_dims.0)
-            .map(|_| {
-                VarTensor::new_fixed(
-                    cs,
-                    logrows,
-                    fixed_dims.1,
-                    vec![fixed_dims.1],
-                    true,
-                    max_rotations,
-                )
-            })
-            .collect_vec();
-        let instances = (0..instance_dims.0)
-            .map(|i| ValTensor::new_instance(cs, instance_dims.1[i].clone(), true))
+        let mut fixed = vec![];
+        if visibility.params == Visibility::Public {
+            fixed = (0..1)
+                .map(|_| VarTensor::new_fixed(cs, logrows, var_len))
+                .collect_vec();
+        }
+        // will be empty if instances dims has len 0
+        let instances = (0..instance_dims.len())
+            .map(|i| ValTensor::new_instance(cs, instance_dims[i].clone()))
             .collect_vec();
         ModelVars {
             advices,

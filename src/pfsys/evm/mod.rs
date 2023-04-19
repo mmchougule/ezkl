@@ -21,6 +21,12 @@ pub mod single;
 #[derive(Error, Debug)]
 /// Errors related to evm verification
 pub enum EvmVerificationError {
+    /// If the Solidity verifier worked but returned false
+    #[error("Solidity verifier found the proof invalid")]
+    InvalidProof,
+    /// If the Solidity verifier threw and error (e.g. OutOfGas)
+    #[error("Execution of Solidity code failed")]
+    SolidityExecution,
     /// EVM execution errors
     #[error("EVM execution of raw code failed")]
     RawExecution,
@@ -38,9 +44,14 @@ pub struct DeploymentCode {
     code: Vec<u8>,
 }
 impl DeploymentCode {
-    /// Return (inner) byte code
+    /// Return len byte code
     pub fn len(&self) -> usize {
         self.code.len()
+    }
+
+    /// If no byte code
+    pub fn is_empty(&self) -> bool {
+        self.code.len() == 0
     }
     /// Return (inner) byte code
     pub fn code(&self) -> &Vec<u8> {

@@ -15,23 +15,15 @@
     unused_parens,
     while_true,
     missing_docs,
-    missing_debug_implementations,
-    missing_docs,
     trivial_casts,
     trivial_numeric_casts,
     unused_extern_crates,
     unused_import_braces,
     unused_qualifications,
     missing_debug_implementations,
-    missing_docs,
-    unsafe_code,
-    trivial_casts,
-    trivial_numeric_casts,
-    unused_extern_crates,
-    unused_import_braces,
-    unused_qualifications
+    unsafe_code
 )]
-#![feature(slice_flatten)]
+
 //! A library for turning computational graphs, such as neural networks, into ZK-circuits.
 //!
 
@@ -39,6 +31,9 @@
 pub mod circuit;
 /// CLI commands.
 pub mod commands;
+#[cfg(not(target_arch = "wasm32"))]
+/// Utility functions for contracts
+pub mod eth;
 /// Command execution
 pub mod execute;
 /// Utilities for converting from Halo2 Field types to integers (and vice-versa).
@@ -51,3 +46,6 @@ pub mod graph;
 pub mod pfsys;
 /// An implementation of multi-dimensional tensors.
 pub mod tensor;
+/// Python bindings
+#[cfg(feature = "python-bindings")]
+pub mod python;
